@@ -68,6 +68,7 @@ public static class BookCreateEndpoint
                 book.PagesCount = requestBody.PagesCount;
                 book.AuthorFirstName = requestBody.AuthorFirstName;
                 book.AuthorLastName = requestBody.AuthorLastName;
+                dbContext.SaveChanges();
 
                 return TypedResults.Created();
             })

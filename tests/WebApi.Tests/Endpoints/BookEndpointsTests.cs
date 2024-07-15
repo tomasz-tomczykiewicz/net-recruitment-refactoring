@@ -2,7 +2,6 @@ using System.Net;
 using System.Net.Http.Json;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using WebApi.Endpoints;
@@ -11,27 +10,14 @@ using WebApi.Tests.TestFramework;
 
 namespace WebApi.Tests.Endpoints;
 
-public class BookEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
+public sealed class BookEndpointsTests(WebApplicationFactory<Program> factory)
+    : IClassFixture<WebApplicationFactory<Program>>, IDisposable
 {
-    private readonly WebApplicationFactory<Program> _factory;
-
-    public BookEndpointsTests(WebApplicationFactory<Program> factory)
-    {
-        _factory = factory.WithWebHostBuilder(webHostBuilder =>
-        {
-            webHostBuilder.ConfigureTestServices(services =>
-            {
-                services.Remove(services.First(x => x.ServiceType == typeof(LibraryDbContext)));
-                services.AddDbContext<LibraryDbContext>(options => options.UseInMemoryDatabase($"Library_Test_{Guid.NewGuid()}"));
-            });
-        });
-    }
-    
     [Fact]
     public async Task CreateBook_WhenValidRequest_ReturnsCreated()
     {
         // Given
-        var client = _factory.CreateClient();
+        var client = factory.CreateClient();
         var requestBody = new CreateBookRequestBody("9780345332080", "The Fellowship of the Ring", 527, "J.R.R.", "Tolkien");
 
         // When
@@ -40,7 +26,7 @@ public class BookEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
         // Then
         response.StatusCode.Should().Be(HttpStatusCode.Created);
 
-        await using var scope = _factory.Services.CreateAsyncScope();
+        await using var scope = factory.Services.CreateAsyncScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
         var book = await dbContext.Books.FirstOrDefaultAsync(x => x.Isbn == "9780345332080");
         book.Should().NotBeNull();
@@ -54,7 +40,7 @@ public class BookEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task GetBooks_WhenNoBooks_ReturnsEmptyList()
     {
         // Given
-        var client = _factory.CreateClient();
+        var client = factory.CreateClient();
 
         // When
         var response = await client.GetAsync("/books");
@@ -70,12 +56,9 @@ public class BookEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task GetBooks_WhenBooks_ReturnsList()
     {
         // Given
-        await using var scope = _factory.Services.CreateAsyncScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
-        await dbContext.Books.AddRangeAsync(new BookFaker().Generate(10));
-        await dbContext.SaveChangesAsync();
-        
-        var client = _factory.CreateClient();
+        await SeedBooksAsync(new BookFaker().Generate(10).ToArray());
+
+        var client = factory.CreateClient();
 
         // When
         var response = await client.GetAsync("/books");
@@ -91,20 +74,16 @@ public class BookEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task GetBook_WhenBookExists_ReturnsOk()
     {
         // Given
-        await using var scope = _factory.Services.CreateAsyncScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
-        var book = new Book
+        await SeedBooksAsync(new Book
         {
             Isbn = "9788845270758",
             Title = "The Two Towers",
             PagesCount = 352,
             AuthorFirstName = "J.R.R.",
             AuthorLastName = "Tolkien",
-        };
-        await dbContext.Books.AddAsync(book);
-        await dbContext.SaveChangesAsync();
+        });
         
-        var client = _factory.CreateClient();
+        var client = factory.CreateClient();
 
         // When
         var response = await client.GetAsync("/books/9788845270758");
@@ -125,7 +104,7 @@ public class BookEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task GetBook_WhenBookDoesNotExist_ReturnsNotFound()
     {
         // Given
-        var client = _factory.CreateClient();
+        var client = factory.CreateClient();
 
         // When
         var response = await client.GetAsync("/books/9788845270751");
@@ -138,20 +117,16 @@ public class BookEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task UpdateBook_WhenBookExists_ReturnsCreated()
     {
         // Given
-        await using var scope = _factory.Services.CreateAsyncScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
-        var book = new Book
+        await SeedBooksAsync(new Book
         {
             Isbn = "9780345296085",
             Title = "Wrong title",
             PagesCount = 1,
             AuthorFirstName = "Unknown",
             AuthorLastName = "Unknown",
-        };
-        await dbContext.Books.AddAsync(book);
-        await dbContext.SaveChangesAsync();
-        
-        var client = _factory.CreateClient();
+        });
+
+        var client = factory.CreateClient();
         var requestBody = new UpdateBookRequestBody("The Return of the King", 416, "J.R.R.", "Tolkien");
 
         // When
@@ -160,6 +135,8 @@ public class BookEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
         // Then
         response.StatusCode.Should().Be(HttpStatusCode.Created);
         
+        await using var scope = factory.Services.CreateAsyncScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
         var updatedBook = await dbContext.Books.FirstOrDefaultAsync(x => x.Isbn == "9780345296085");
         updatedBook.Should().NotBeNull();
         updatedBook!.Title.Should().Be("The Return of the King");
@@ -172,7 +149,7 @@ public class BookEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task UpdateBook_WhenBookDoesNotExist_ReturnsNotFound()
     {
         // Given
-        var client = _factory.CreateClient();
+        var client = factory.CreateClient();
         var requestBody = new UpdateBookRequestBody("The Return of the King", 416, "J.R.R.", "Tolkien");
 
         // When
@@ -186,26 +163,25 @@ public class BookEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task DeleteBook_WhenBookExists_ReturnsCreated()
     {
         // Given
-        await using var scope = _factory.Services.CreateAsyncScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
-        var book = new Book
+        await SeedBooksAsync(new Book
         {
             Isbn = "9780345296085",
             Title = "The Return of the King",
             PagesCount = 416,
             AuthorFirstName = "J.R.R.",
             AuthorLastName = "Tolkien",
-        };
-        await dbContext.Books.AddAsync(book);
-        await dbContext.SaveChangesAsync();
+        });
         
-        var client = _factory.CreateClient();
+        var client = factory.CreateClient();
 
         // When
         var response = await client.DeleteAsync("/books/9780345296085");
 
         // Then
         response.StatusCode.Should().Be(HttpStatusCode.Created);
+        
+        await using var scope = factory.Services.CreateAsyncScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
         var deletedBook = await dbContext.Books.FirstOrDefaultAsync(x => x.Isbn == "9780345296085");
         deletedBook.Should().BeNull();
     }
@@ -214,12 +190,27 @@ public class BookEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task DeleteBook_WhenBookDoesNotExist_ReturnsNotFound()
     {
         // Given
-        var client = _factory.CreateClient();
+        var client = factory.CreateClient();
 
         // When
         var response = await client.DeleteAsync("/books/9788845270756");
 
         // Then
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    public void Dispose()
+    {
+        using var scope = factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+        dbContext.Database.EnsureDeleted();
+    }
+
+    private async Task SeedBooksAsync(params Book[] books)
+    {
+        await using var scope = factory.Services.CreateAsyncScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<LibraryDbContext>();
+        await dbContext.Books.AddRangeAsync(books);
+        await dbContext.SaveChangesAsync();
     }
 }
